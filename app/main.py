@@ -11,6 +11,7 @@ Endpoints:
 Auth: header `X-API-Key: <LAYA_API_KEY>` em tudo exceto /health.
 """
 
+import asyncio
 import logging
 import os
 import secrets
@@ -23,7 +24,9 @@ from pydantic import BaseModel, Field
 
 log = logging.getLogger("laya-api")
 
-router_obj = None  # laya.Router, carregado no lifespan
+router_obj = None  # laya.Router, carregado em background no lifespan
+_load_task: "asyncio.Task | None" = None
+_load_error: str | None = None
 
 API_KEY = os.getenv("LAYA_API_KEY", "")
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -45,22 +48,52 @@ authed = Depends(verify_api_key)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global router_obj
-    from laya import Router
+    """Yield primeiro p/ /health responder {"status":"loading"} de imediato,
+    depois carrega o Router em background via asyncio.create_task.
+
+    O construtor Router(preload=...) é bloqueante (baixa pesos + torch),
+    então roda em asyncio.to_thread p/ não travar o event loop.
+    """
+    global router_obj, _load_task, _load_error
 
     # preload=True deixa os 3 checkpoints residentes (~4-5GB RAM).
     # Em máquina apertada, use preload=False e chame /preload depois,
     # ou Router(max_loaded=1) para LRU de 1 checkpoint.
-
     preload = os.getenv("LAYA_PRELOAD", "true").lower() in ("1", "true", "yes")
     device = os.getenv("LAYA_DEVICE", "cpu")  # oracle-arm: cpu
     if not os.getenv("LAYA_API_KEY"):
         log.warning("LAYA_API_KEY não setado — auth DESATIVADA (ok p/ dev local)")
-    log.warning("Carregando Router(preload=%s, device=%s)...", preload, device)
-    router_obj = Router(preload=preload, device=device)
-    log.warning("Router pronto.")
+
+    def _build_router():
+        from laya import Router
+
+        log.warning("Carregando Router(preload=%s, device=%s)...", preload, device)
+        obj = Router(preload=preload, device=device)
+        log.warning("Router pronto.")
+        return obj
+
+    async def _load_in_background():
+        global router_obj, _load_error
+        try:
+            router_obj = await asyncio.to_thread(_build_router)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            _load_error = str(e)
+            log.exception("Falha ao carregar Router em background")
+
+    _load_task = asyncio.create_task(_load_in_background())
+    # Yield imediato: app passa a responder /health (loading) sem esperar pesos.
     yield
+    # Shutdown: cancela carga pendente e libera referência.
+    if _load_task and not _load_task.done():
+        _load_task.cancel()
+        try:
+            await _load_task
+        except asyncio.CancelledError:
+            pass
     router_obj = None
+    _load_task = None
 
 
 app = FastAPI(
@@ -105,6 +138,8 @@ class PreloadRequest(BaseModel):
 @app.get("/health", summary="Health check", tags=["ops"])
 def health():
     ok = router_obj is not None
+    if _load_error is not None:
+        return {"status": "error", "router_loaded": False, "error": _load_error}
     return {"status": "ok" if ok else "loading", "router_loaded": ok}
 
 
