@@ -1,0 +1,7 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.0.0
+laya==0.3.4
+# laya já puxa: torch>=2.0.0, transformers>=4.45.0, safetensors, huggingface_hub, numpy
+# No servidor CPU-only (oracle-arm), instale o torch CPU para economizar espaço:
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch
