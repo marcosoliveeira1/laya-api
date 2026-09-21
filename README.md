@@ -243,4 +243,5 @@ Este projeto é apenas um wrapper HTTP — todo o motor de decisões é o
 (Apache 2.0). Se for usar, considere dar uma estrela no repo original e,
 se te ajudar, [apoiar o autor](https://www.buymeacoffee.com/nandakishorm).
 
-Wrapper neste repo: sem licença definida — se for publicar, adicione uma (sugestão: Apache 2.0 ou MIT para compatibilidade com a lib).
+Wrapper neste repo: licenciado em Apache 2.0 (ver `LICENSE`).
+Atribuições: motor `laya` de NandhaKishorM / Convai Innovations (Apache 2.0) + pesos `convaiinnovations/laya` no HF (Apache 2.0).
