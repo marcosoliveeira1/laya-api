@@ -10,7 +10,11 @@ services:
     volumes:
       - laya-hf:/data/hf-cache
     environment:
-      LAYA_PRELOAD: "true"
+      # false: boot em <1s (/health=loading), modelos via lazy no 1º /predict
+      # ou POST /preload {"models":["english","multilingual"]}.
+      # true carregava os 3 checkpoints (~4-5GB RAM, minutos em CPU ARM).
+      # typed-decisions nunca é auto-escolhido pelo Router (só com model= explícito).
+      LAYA_PRELOAD: "false"
       LAYA_DEVICE: cpu
       HF_HOME: /data/hf-cache
       LAYA_API_KEY: ${LAYA_API_KEY:-}
@@ -31,7 +35,9 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 180s
+      # Boot com preload levava >3min em CPU ARM e o Coolify matava o
+      # container em loop. 10min de graça p/ baixar + torch.load em paz.
+      start_period: 600s
 
 volumes:
   laya-hf:
