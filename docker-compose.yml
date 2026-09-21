@@ -1,0 +1,41 @@
+services:
+  laya-api:
+    build: .
+    image: laya-api:latest
+    # Sem `ports:` de propósito — serviço interno como o gotenberg:
+    # o n8n alcança via http://laya-api:8000 na rede `shared`.
+    # P/ testar local com porta, use: docker compose run -p 8000:8000 laya-api
+    expose:
+      - "8000"
+    volumes:
+      - laya-hf:/data/hf-cache
+    environment:
+      LAYA_PRELOAD: "true"
+      LAYA_DEVICE: cpu
+      HF_HOME: /data/hf-cache
+      LAYA_API_KEY: ${LAYA_API_KEY:-}
+    networks:
+      default:
+        aliases:
+          - laya-api
+      shared:
+        aliases:
+          - laya-api
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=5).status==200 else 1)\"",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+
+volumes:
+  laya-hf:
+
+networks:
+  shared:
+    external: true

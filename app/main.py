@@ -1,24 +1,46 @@
 """Laya API — wrapper FastAPI sobre a lib `laya` (Router com preload).
 
 Endpoints:
-  GET  /health   -> status + modelos residentes
+  GET  /health   -> status + modelos residentes (aberto, sem auth)
   POST /predict  -> router.predict(state, questions, model?)
   POST /route    -> só a decisão de roteamento, sem forward pass
   POST /preload  -> pré-carrega checkpoints em memória
   POST /unload   -> libera memória
   GET  /presets/{nome} -> schemas prontos (router, guard, moderation, triage)
+
+Auth: header `X-API-Key: <LAYA_API_KEY>` em tudo exceto /health.
 """
 
 import logging
+import os
+import secrets
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
 log = logging.getLogger("laya-api")
 
 router_obj = None  # laya.Router, carregado no lifespan
+
+API_KEY = os.getenv("LAYA_API_KEY", "")
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def verify_api_key(key: str | None = Security(api_key_header)):
+    """Exige `X-API-Key: <LAYA_API_KEY>` em tudo, exceto /health.
+
+    Sem LAYA_API_KEY setado, auth fica desativada (dev local) com warning no boot.
+    """
+    if not API_KEY:
+        return
+    if not key or not secrets.compare_digest(key, API_KEY):
+        raise HTTPException(401, "invalid API key")
+
+
+authed = Depends(verify_api_key)
 
 
 @asynccontextmanager
@@ -29,10 +51,11 @@ async def lifespan(app: FastAPI):
     # preload=True deixa os 3 checkpoints residentes (~4-5GB RAM).
     # Em máquina apertada, use preload=False e chame /preload depois,
     # ou Router(max_loaded=1) para LRU de 1 checkpoint.
-    import os
 
     preload = os.getenv("LAYA_PRELOAD", "true").lower() in ("1", "true", "yes")
     device = os.getenv("LAYA_DEVICE", "cpu")  # oracle-arm: cpu
+    if not os.getenv("LAYA_API_KEY"):
+        log.warning("LAYA_API_KEY não setado — auth DESATIVADA (ok p/ dev local)")
     log.warning("Carregando Router(preload=%s, device=%s)...", preload, device)
     router_obj = Router(preload=preload, device=device)
     log.warning("Router pronto.")
@@ -40,15 +63,38 @@ async def lifespan(app: FastAPI):
     router_obj = None
 
 
-app = FastAPI(title="Laya API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="Laya API",
+    version="0.1.0",
+    description="Wrapper HTTP sobre a lib `laya` (Router com preload). "
+    "Motor de decisões tipadas `choice`/`score`/`noul`. "
+    "Auth via header `X-API-Key` (exceto `/health`). "
+    "Docs interativas em `/docs`.",
+    lifespan=lifespan,
+)
 
 
 class PredictRequest(BaseModel):
-    state: dict[str, Any] = Field(description="Estado: texto, email, ticket ou JSON")
-    questions: dict[str, Any] = Field(description="Perguntas tipadas choice/score/noul")
+    state: dict[str, Any] = Field(
+        description="Estado: texto, email, ticket ou JSON",
+        examples=[{"from": "user@acme.com", "body": "Fui cobrado 2x em março."}],
+    )
+    questions: dict[str, Any] = Field(
+        description="Perguntas tipadas choice/score/noul",
+        examples=[
+            {
+                "department": {
+                    "type": "choice",
+                    "instructions": "qual departamento deve atender?",
+                    "criteria": {"billing": "faturas, reembolsos", "other": "resto"},
+                }
+            }
+        ],
+    )
     model: Optional[str] = Field(
         default=None,
-        description="Override: 'english' | 'multilingual' | 'typed-decisions' (default: auto)",
+        description="Override: 'english' | 'multilingual' | 'typed-decisions' (default: auto via Router)",
+        examples=[None],
     )
 
 
@@ -56,13 +102,13 @@ class PreloadRequest(BaseModel):
     models: Optional[list[str]] = None  # ex: ["english", "multilingual"]
 
 
-@app.get("/health")
+@app.get("/health", summary="Health check", tags=["ops"])
 def health():
     ok = router_obj is not None
     return {"status": "ok" if ok else "loading", "router_loaded": ok}
 
 
-@app.post("/predict")
+@app.post("/predict", summary="Inferência completa", tags=["inference"], dependencies=[authed])
 def predict(req: PredictRequest):
     if router_obj is None:
         raise HTTPException(503, "router ainda carregando")
@@ -76,7 +122,7 @@ def predict(req: PredictRequest):
         raise HTTPException(500, f"predict falhou: {e}")
 
 
-@app.post("/route")
+@app.post("/route", summary="Só roteamento, sem inferência", tags=["inference"], dependencies=[authed])
 def route_only(req: PredictRequest):
     """Só a decisão de roteamento (<0.5ms, sem forward pass)."""
     if router_obj is None:
@@ -89,7 +135,7 @@ def route_only(req: PredictRequest):
         raise HTTPException(500, f"route falhou: {e}")
 
 
-@app.post("/preload")
+@app.post("/preload", summary="Pré-carrega checkpoints", tags=["ops"], dependencies=[authed])
 def preload(req: PreloadRequest):
     if router_obj is None:
         raise HTTPException(503, "router ainda carregando")
@@ -103,7 +149,7 @@ def preload(req: PreloadRequest):
         raise HTTPException(500, f"preload falhou: {e}")
 
 
-@app.post("/unload")
+@app.post("/unload", summary="Libera checkpoints da memória", tags=["ops"], dependencies=[authed])
 def unload():
     if router_obj is None:
         raise HTTPException(503, "router ainda carregando")
@@ -111,7 +157,7 @@ def unload():
     return {"status": "ok"}
 
 
-@app.get("/presets/{nome}")
+@app.get("/presets/{nome}", summary="Schemas prontos", tags=["schemas"], dependencies=[authed])
 def preset(nome: str):
     import laya
 
