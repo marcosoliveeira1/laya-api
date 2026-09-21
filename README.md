@@ -150,6 +150,57 @@ Resposta do `/predict` (formato da lib `laya`):
 
 Primitivas de pergunta: `choice` (label + probs + confiança), `score` (nível ordinal + distribuição), `noul` (P(true) 0–1). Ver doc da lib para o schema completo.
 
+## Laya-API vs Jev (TypeSafe AI)
+
+Mesma ideia — modelo System One: `state` + `questions` tipadas (`choice`/`score`/`noul`) → `answers` com probabilidades, em 1 forward pass. A diferença é **onde roda e quanto custa**.
+
+| | **Este serviço (laya-api)** | **Jev (API hospedada)** |
+| --- | --- | --- |
+| Modelo | `laya` v0.3.4 (ModernBERT-large 421M EN + mmBERT-base 322M multilíngue + typed-decisions 421M) | `jev-1.13.0` / `jev-latest` (pesos fechados) |
+| Pesos | Abertos, Apache 2.0 (`convaiinnovations/laya` no HF) | Fechados, só API gerenciada (waitlist TypeSafe) |
+| Onde roda | Self-hosted aqui (oracle-arm, CPU, rede interna `shared`) | Nuvem TypeSafe (`POST https://api.typesafe.ai/v1/systemone`, ctx 64k) |
+| Auth | `X-API-Key: $LAYA_API_KEY` (exceto `/health`) | `Authorization: Bearer $JEV_API_KEY` |
+| Custo marginal | $0 por chamada (custo é infra: ~4GB disco + ~4–5GB RAM com preload) | $0.042 / 1M input tokens, output free |
+| Latência típica | T4 33–40ms/q; **CPU 193–464ms** com preload; 7–10s por troca de idioma sem preload | **70–500ms** fim-a-fim (inclui rede); todas as perguntas em paralelo |
+| Multilíngue | 100+ idiomas via `Router` (<0.5ms); 45 de 51 utilizáveis no benchmark | Sem benchmark multilíngue publicado |
+| Extras deste wrapper | `POST /route` (só roteamento, sem inferência), `POST /preload`/`/unload`, `GET /presets/{router,guard,moderation,triage}`, `GET /health` sem auth | `usage: {input_tokens, cost_usd}` por resposta; SDKs Python/JS; gateways Vercel/Cloudflare; integração LangChain |
+
+Acurácia (benchmark público `typed-decisions`, 2.000 decisões — números auto-publicados pelo repo `laya`, ver [BENCHMARKS.md](https://github.com/NandhaKishorM/laya/blob/main/BENCHMARKS.md); leitura independente em [jev001.org/benchmarks](https://jev001.org/benchmarks/) confirma a ordem de grandeza mas diverge em calibração — fixe a versão antes de decidir):
+
+| Benchmark | Jev 1.13.0 | Laya (routed) |
+| --- | --- | --- |
+| typed-decisions | 0.727 | **0.766** (+0.039) |
+| AG News (4 labels) | 0.910 | **0.950** (+0.040) |
+| DAIR Emotion (6 labels) | 0.480 | **0.595** (+0.115) |
+| ECE (menor = melhor) | 0.246 | **0.081** (~3× melhor) |
+| p50 1 pergunta | 236–276ms (API) | **32.8ms** (T4, ~7.8× mais rápido) |
+| Banking77 (77 labels) | **0.870** | 0.425 — **Jev vence folgado acima de ~20 opções** |
+
+Chamada equivalente (só muda base + header):
+
+```bash
+# laya-api (interno)
+curl -X POST http://laya-api:8000/predict \
+  -H 'Content-Type: application/json' -H "X-API-Key: $LAYA_API_KEY" -d '{
+  "state": {"body": "Fui cobrado 2x em março."},
+  "questions": {"escalate": {"type": "noul", "instructions": "Escalar p/ humano agora?"}}
+}'
+
+# Jev (hospedado)
+curl https://api.typesafe.ai/v1/systemone \
+  -H "Authorization: Bearer $JEV_API_KEY" -H 'Content-Type: application/json' -d '{
+  "state": {"body": "Fui cobrado 2x em março."},
+  "questions": {"escalate": {"type": "noul", "instructions": "Escalar p/ humano agora?"}}
+}'
+```
+
+**Quando usar qual:**
+
+- Fique no **laya-api** se: quer custo zero por chamada em alto volume, dados não podem sair do servidor (tickets/emails sensíveis ficam na rede `shared`), precisa operar offline, ou quer fine-tunar (pesos abertos, notebook 2xT4 no repo original).
+- Prefira o **Jev** se: não quer operar GPU/RAM/disco (~6GB reservados aqui), precisa de >20 labels por pergunta sem coarse-to-fine, ou quer latência previsível sem warm-up/preload.
+
+Números datados de 21/09/2026; ambos os projetos lançaram várias versões na primeira semana — re-rode no seu sample rotulado (algumas centenas de casos reais, separando `choice`/`score`/`noul`) antes de automatizar.
+
 ## Integração n8n
 
 Nó HTTP Request → `POST http://laya-api:8000/predict` (rede interna `shared`)
