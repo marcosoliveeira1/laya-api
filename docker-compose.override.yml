@@ -1,0 +1,21 @@
+# Override LOCAL (dev no Mac) — mesclado automaticamente com o
+# docker-compose.yml (que é o de produção/Coolify: sem porta publicada +
+# rede externa `shared`).
+#
+#   docker compose up --build -d   # sobe laya-api em http://localhost:8000
+#   docker compose logs -f          # acompanha (1º /predict baixa ~2GB do HF)
+#   docker compose down             # derruba (pesos persistem no volume laya-hf)
+#
+# Diferenças p/ produção: porta 8000 publicada + rede `shared` local
+# (gerenciada, em vez de externa). Envs herdam da base: LAYA_PRELOAD=false
+# (boot <1s, checkpoint carrega lazy no 1º /predict), LAYA_DEVICE=cpu,
+# HF_HOME=/data/hf-cache (volume nomeado `laya-hf`).
+# Sem LAYA_API_KEY no ambiente => auth desativada (ok p/ dev local).
+services:
+  laya-api:
+    ports:
+      - "8000:8000"
+
+networks:
+  shared:
+    external: false

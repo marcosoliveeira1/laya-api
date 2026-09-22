@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 
     pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
+COPY scripts/ ./scripts/
 
 VOLUME ["/data/hf-cache"]
 EXPOSE 8000
